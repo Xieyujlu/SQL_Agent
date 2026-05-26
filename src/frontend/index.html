@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SQLAgent 多智能体助手</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+    <header>
+        <h1>SQLAgent 多智能体助手</h1>
+        <p class="subtitle">支持数据库查询、数据可视化</p>
+    </header>
+
+    <div id="chat-container">
+        <div id="messages"></div>
+        <div id="loading" class="hidden">
+            <div class="spinner"></div>
+            <span>正在思考...</span>
+        </div>
+    </div>
+
+    <div id="input-area">
+        <textarea id="input-box" rows="2" placeholder="请输入你的问题，例如：帮我查一下数据库中有哪些表" maxlength="2000"></textarea>
+        <button id="send-btn">发送</button>
+    </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

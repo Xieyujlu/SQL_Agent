@@ -1,0 +1,151 @@
+
+from pyexpat import model
+from typing import List, Optional
+from venv import create
+from langchain_core.tools import BaseTool
+from pydantic import Field, create_model
+from sqlalchemy import table
+from src.agent.utils.db_utils import MySQLDatabaseManger
+from src.agent.utils.log_utils import log
+
+
+class ListTablesTool(BaseTool):
+
+    """列出所有表信息"""
+    name: str = "sql_db_list_tables"
+    description: str = "列出MySQL数据库中的所有表名及其描述信息"
+
+    # 数据库管理器实例
+    db_manger: MySQLDatabaseManger
+
+    def _run(self) -> str:
+        try:
+            tables_info = self.db_manger.get_table_with_comments()
+            result = f"数据库中共有{len(tables_info)}张表:\n\n"
+            for i, table_info in enumerate(tables_info):
+                table_name = table_info['table_name']
+                table_comment = table_info["table_comment"]
+
+                # 处理空描述的情况
+                if not table_comment or table_comment.isspace():
+                    description_display = "暂无描述"
+                else:
+                    description_display = table_comment
+
+                result += f"{i}. {table_name}\n"
+                result += f"    描述: {description_display}\n\n"
+            return result
+
+        except Exception as e:
+            log.exception(e)
+            return f"列出表时出错: {str(e)}"
+        
+
+    async def _arun(self) -> str:
+        """异步执行"""
+
+        return self._run()
+    
+
+class TableSchemaTool(BaseTool):
+
+    """列出表结构"""
+    name: str = "sql_db_schema"
+    description: str = "获取MySQL数据库中指定表的详细模式信息（包含字段注释、列定义、主键、外键等）。输入应为逗号分隔的表名列表，以获取所有表信息。"
+
+    db_manger: MySQLDatabaseManger
+
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        # self.db_manger = db_manger
+        self.args_schema = create_model("TableSchemaToolArgs", table_names=(Optional[str],Field(description="表名列表，以逗号分隔,例如：users,order")))
+
+    def _run(self, table_names: Optional[str] = None) -> str:
+        """返回表结构"""
+        try:
+            table_list = None
+            if table_names:
+                table_list = [name.strip() for name in table_names.split(",") if name.strip()]
+                schema_info = self.db_manger.get_table_schema(table_list)
+            return schema_info if schema_info else "未找到匹配的表"
+
+        except Exception as e:
+            log.exception(e)
+            return f"获取表结构时出错: {str(e)}"
+    
+    async def _arun(self, table_names: Optional[str] = None) -> str:
+        """异步执行"""
+        return self._run(table_names)
+
+class SQLQueryTool(BaseTool):
+    """检查SQL查询语法"""
+    name: str = "sql_db_query"
+    description: str = "在MySQL数据库中执行SQL查询语句并返回结果。输入应为有效的SQL SELECT查询语句。"
+
+    db_manger: MySQLDatabaseManger
+
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        # self.db_manger = db_manger
+        self.args_schema = create_model("SQLQueryToolArgs", query=(str,Field(description="有效的SQL SELECT查询语句")))
+
+
+
+    def _run(self, query: str) -> str:
+        """执行SQL查询语句"""
+        try:
+            result = self.db_manger.execute_query(query)
+            return result
+        except Exception as e:
+            return f"执行SQL查询语句时出错: {str(e)}"
+        
+    async def _arun(self, query: str) -> str:
+        """异步执行"""
+        return self._run(query)
+
+
+class SQLQueryCheckerTool(BaseTool):
+    """检查SQL查询语法"""
+    name: str = "sql_db_query_checker"
+    description: str = "检查SQL查询语句的语法是否正确，提供验证反馈。输入应为要检查的SQL查询。"
+
+    db_manger: MySQLDatabaseManger
+
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        # self.db_manger = db_manger
+        self.args_schema = create_model("SQLQueryCheckerToolArgs", query=(str,Field(description="需要进行检查的SQL语句")))
+
+    def _run(self, query: str) -> str:
+        """检查SQL查询语句"""
+        try:
+            result = self.db_manger.check_query(query)
+            return result
+        except Exception as e:
+            return f"检查SQL查询语句时出错: {str(e)}"
+        
+    async def _arun(self, query: str) -> str:
+        """异步执行"""
+        return self._run(query)
+
+
+    
+if __name__ == "__main__":
+
+    DB_CONFIG = {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "12345678",
+        "database": "stock"
+    }
+    
+    manager = MySQLDatabaseManger(connection_string=f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
+    # tool = ListTablesTool(db_manger=manager) # 测试第一个工具
+    # print(tool.invoke({}))
+    tool = TableSchemaTool(db_manger=manager) # 测试第二个工具
+    print(tool.invoke({'table_names':'row_table_df'}))
+    # tool = SQLQueryTool(db_manger=manager) # 测试第三个工具
+    # print(tool.invoke({'query':'select * from row_table_df limit 10'}))
+    # tool = SQLQueryCheckerTool(db_manger=manager) # 测试第四个工具
+    # print(tool.invoke({'query':'select * from row_table_df limit 10 a'}))

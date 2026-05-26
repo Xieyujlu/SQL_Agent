@@ -1,0 +1,22 @@
+# 敏感文件
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+
+# 数据文件
+data/
