@@ -5,6 +5,11 @@ import logging
 import uuid
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# 在导入任何项目模块之前加载 .env
+load_dotenv(Path(__file__).resolve().parent.parent / "agent" / ".env")
+
 from fastapi import FastAPI
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles

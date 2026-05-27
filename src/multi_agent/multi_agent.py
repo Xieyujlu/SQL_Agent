@@ -1,9 +1,15 @@
 import os
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 加载 .env 文件（兼容直接导入 multi_agent 模块的场景）
+load_dotenv(Path(__file__).resolve().parent.parent / "agent" / ".env")
+
 from deepagents import CompiledSubAgent, create_deep_agent
 from langchain.agents import create_agent
 from typing import List
-from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import BaseTool

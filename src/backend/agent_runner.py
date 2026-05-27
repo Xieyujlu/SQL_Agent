@@ -65,7 +65,7 @@ class AgentRunner:
         config = {"configurable": {"thread_id": session_id}}
         cmd = Command(resume={"decision": decision, "message": message})
 
-        async for item in self._stream(config, cmd, enable_hitl=False):
+        async for item in self._stream(config, cmd, enable_hitl=True):
             yield item
 
     # ── 内部方法 ──────────────────────────────────────────────────
@@ -78,6 +78,7 @@ class AgentRunner:
         StreamChunk = (namespace: tuple[str,...], mode: str, data: Any)
         """
         hitl_sent = False
+        seen_tools: set[str] = set()
 
         async for chunk in self._agent.astream(
             input_data,
@@ -95,6 +96,14 @@ class AgentRunner:
             if mode == "messages":
                 if hasattr(data, "__len__") and len(data) >= 2:
                     token, _metadata = data[0], data[1]
+                    # 检测工具调用开始，输出状态提示
+                    if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
+                        for tc in token.tool_call_chunks:
+                            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                            if name and name not in seen_tools:
+                                seen_tools.add(name)
+                                yield f"\n> 🔍 正在执行: {name}\n"
+                    # 流式文本内容
                     if token.content and hasattr(token, "tool_call_chunks"):
                         yield token.content
 
@@ -115,3 +124,4 @@ class AgentRunner:
                         "query": query,
                         "result": result,
                     }
+                    break  # 中断后退出流，不再等待更多 chunk（astream 已暂停）

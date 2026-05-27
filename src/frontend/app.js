@@ -122,23 +122,45 @@ const chatApp = {
 
         while (true) {
             var result = await reader.read();
-            if (result.done) break;
+            if (result.done) {
+                console.log('[SSE] 流结束');
+                if (buffer.trim() && buffer.trim().startsWith('data: ')) {
+                    var trimmed = buffer.trim();
+                    try {
+                        var lastData = JSON.parse(trimmed.slice(6));
+                        if (lastData.type === 'hitl_required') {
+                            onHitl(lastData.session_id, lastData.query, lastData.result);
+                        } else if (lastData.token) {
+                            onToken(lastData.token);
+                        } else if (lastData.done) {
+                            onDone(lastData.session_id);
+                        }
+                    } catch (e) {
+                        console.error('[SSE] 残留buffer解析失败:', e.message);
+                    }
+                }
+                break;
+            }
             buffer += decoder.decode(result.value, { stream: true });
-
             var lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
             for (var i = 0; i < lines.length; i++) {
-                var line = lines[i];
+                var line = lines[i].trim();
                 if (!line.startsWith('data: ')) continue;
-                var data = JSON.parse(line.slice(6));
+                try {
+                    var data = JSON.parse(line.slice(6));
+                    console.log('[SSE] 收到事件:', data.type || (data.token ? 'token' : (data.done ? 'done' : 'other')));
 
-                if (data.type === 'hitl_required') {
-                    onHitl(data.session_id, data.query, data.result);
-                } else if (data.token) {
-                    onToken(data.token);
-                } else if (data.done) {
-                    onDone(data.session_id);
+                    if (data.type === 'hitl_required') {
+                        onHitl(data.session_id, data.query, data.result);
+                    } else if (data.token) {
+                        onToken(data.token);
+                    } else if (data.done) {
+                        onDone(data.session_id);
+                    }
+                } catch (e) {
+                    console.error('[SSE] JSON解析失败:', e.message, 'line:', line.slice(0, 100));
                 }
             }
         }
@@ -156,6 +178,7 @@ const chatApp = {
         this.setLoading(true);
 
         this.accumulated = '';
+        this.hitlProcessed = false;
         this.currentAssistantDiv = this.addMessage('assistant', '');
 
         try {
@@ -176,6 +199,7 @@ const chatApp = {
             await this.readSSEStream(
                 res,
                 function(token) {
+                    if (self.hitlProcessed) return;
                     self.accumulated += token;
                     self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated);
                     self.scrollToBottom();
@@ -184,7 +208,10 @@ const chatApp = {
                     self.sessionId = sid;
                 },
                 function(sid, query, result) {
+                    console.log('[HITL] onHitl 回调被调用, session_id:', sid, 'query:', (query || '').slice(0, 80));
                     self.sessionId = sid;
+                    self.hitlProcessed = true;
+                    self.currentAssistantDiv.innerHTML = '<p style="color:#667eea;font-weight:bold">查询已执行，等待审核...</p>';
                     self.createFeedbackUI(sid, query, result);
                 }
             );
@@ -271,6 +298,7 @@ const chatApp = {
 
         // 创建新的 assistant 消息容器接收后续输出
         this.accumulated = '';
+        this.hitlProcessed = false;
         this.currentAssistantDiv = this.addMessage('assistant', '');
 
         try {
@@ -292,12 +320,19 @@ const chatApp = {
             await this.readSSEStream(
                 res,
                 function(token) {
+                    if (self.hitlProcessed) return;
                     self.accumulated += token;
                     self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated);
                     self.scrollToBottom();
                 },
                 function() {},
-                function() {}
+                function(sid, query, result) {
+                    console.log('[HITL] submitFeedback 中收到二次审核, session_id:', sid);
+                    self.sessionId = sid;
+                    self.hitlProcessed = true;
+                    self.currentAssistantDiv.innerHTML = '<p style="color:#667eea;font-weight:bold">查询已执行，等待审核...</p>';
+                    self.createFeedbackUI(sid, query, result);
+                }
             );
 
         } catch (err) {
