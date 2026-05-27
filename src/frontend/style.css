@@ -14,6 +14,7 @@ body {
 }
 
 #app {
+    position: relative;
     width: 100%;
     max-width: 800px;
     height: 100vh;
@@ -378,4 +379,99 @@ header h1 {
 #chat-container::-webkit-scrollbar-thumb {
     background: #ccc;
     border-radius: 3px;
+}
+
+/* ── 用户名输入遮罩 ─────────────────────────── */
+#user-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(255,255,255,0.95);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+#user-overlay.hidden {
+    display: none;
+}
+
+#user-modal {
+    text-align: center;
+    padding: 40px 32px;
+    max-width: 420px;
+}
+
+#user-modal h2 {
+    font-size: 22px;
+    color: #333;
+    margin-bottom: 8px;
+}
+
+#user-modal > p {
+    font-size: 14px;
+    color: #888;
+    margin-bottom: 24px;
+}
+
+#user-name-row {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+#user-name-input {
+    flex: 1;
+    max-width: 240px;
+    padding: 10px 14px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 15px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+#user-name-input:focus {
+    border-color: #667eea;
+}
+
+#user-name-btn {
+    padding: 10px 20px;
+    background: #667eea;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s;
+}
+
+#user-name-btn:hover {
+    background: #5a6fd6;
+}
+
+.user-hint {
+    font-size: 12px;
+    color: #bbb;
+    margin-top: 16px;
+}
+
+/* ── 当前用户标签 ───────────────────────────── */
+#current-user {
+    display: inline-block;
+    font-size: 12px;
+    color: rgba(255,255,255,0.7);
+    cursor: pointer;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    transition: background 0.2s;
+}
+
+#current-user:hover {
+    background: rgba(255,255,255,0.15);
+    color: #fff;
 }

@@ -8,6 +8,20 @@
 </head>
 <body>
 <div id="app">
+
+    <!-- 用户名输入遮罩 -->
+    <div id="user-overlay">
+        <div id="user-modal">
+            <h2>欢迎使用 SQLAgent</h2>
+            <p>请输入你的称呼，系统将自动记住你的偏好和习惯。</p>
+            <div id="user-name-row">
+                <input id="user-name-input" type="text" placeholder="例如：张工" maxlength="20" autocomplete="off">
+                <button id="user-name-btn">开始使用</button>
+            </div>
+            <p class="user-hint">换设备或清缓存后，输入同一个称呼即可找回记忆。</p>
+        </div>
+    </div>
+
     <header>
         <h1>SQLAgent 多智能体助手</h1>
         <p class="subtitle">支持数据库查询、数据可视化</p>

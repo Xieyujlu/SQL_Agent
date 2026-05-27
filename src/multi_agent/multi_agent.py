@@ -17,6 +17,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from src.multi_agent.mcp_tool_config import plot_mcp_server_config
 from src.agent.tools.tool import ListTablesTool, TableSchemaTool, SQLQueryTool, SQLQueryCheckerTool
+from src.agent.tools.memory_tools import (
+    GetUserProfileTool, SetUserProfileTool, SaveEventTool, SearchEventTool,
+    current_user_id,
+)
 from src.agent.utils.db_utils import MySQLDatabaseManger
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from deepagents.backends import LocalShellBackend
@@ -39,6 +43,14 @@ tools = get_tools(
     password=os.getenv("MYSQL_PASSWORD", ""),
     database=os.getenv("MYSQL_DATABASE", "stock"),
 )
+
+# 长期记忆工具（主 Agent 使用）
+memory_tools = [
+    GetUserProfileTool(),
+    SetUserProfileTool(),
+    SaveEventTool(),
+    SearchEventTool(),
+]
 
 def get_python_executable():
     """获取当前Python解释器的完整路径"""
@@ -186,6 +198,19 @@ async def create_my_agent():
     agent_prompt = """
     你是一个专业的数据查询助手，你需要根据用户的问题，查询数据库并给出分析报告。
     你可以根据skill查询电脑的一些属性。
+
+    **长期记忆能力：**
+    你有以下记忆工具可以使用：
+    - get_user_profile: 读取用户已存储的个人信息与偏好（称呼、领域、输出格式偏好等）
+    - set_user_profile: 存储用户个人信息/偏好。当用户明确告知个人信息时主动记录
+    - save_event: 记录重大事件（查询失败原因、用户纠正、重要反馈）供未来参考
+    - search_event: 搜索历史事件，在遇到问题时先查过往经验
+
+    **记忆使用策略：**
+    1. 每次对话开始，先用 get_user_profile 了解用户偏好
+    2. 用户告知个人信息（如称呼、职业、偏好）时，用 set_user_profile 记录
+    3. SQL 查询失败或用户纠正错误时，用 save_event 记录事件（包含具体错误原因）
+    4. 遇到与历史类似的问题时，用 search_event 搜索过往经验
     """
     if any(s.get("name") == "plot_assistant" for s in subagents):
         agent_prompt += "同时可以根据查询结果绘制图片。\n"
@@ -193,6 +218,7 @@ async def create_my_agent():
     return create_deep_agent(
         model=llm1,
         subagents=subagents,
+        tools=memory_tools,
         system_prompt=agent_prompt,
         backend=backend,
         skills=[str(SKILLS_ROOT)],

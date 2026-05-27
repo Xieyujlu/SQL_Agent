@@ -15,6 +15,7 @@ from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.agent.tools.memory_tools import current_user_id
 from src.backend.agent_runner import AgentRunner
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ agent_runner = AgentRunner()
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
+    user_id: str = "default"
 
 
 class FeedbackRequest(BaseModel):
@@ -58,6 +60,7 @@ async def chat(req: ChatRequest):
 
     async def event_stream():
         sid = req.session_id or str(uuid.uuid4())
+        current_user_id.set(req.user_id)
         async for item in agent_runner.astream_chat(req.message, sid):
             if isinstance(item, dict):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
@@ -84,6 +87,7 @@ async def submit_feedback(req: FeedbackRequest):
         logger.warning("保存反馈失败: %s", e)
 
     async def event_stream():
+        current_user_id.set("default")
         async for item in agent_runner.resume_chat(
             req.session_id, req.decision, req.message
         ):

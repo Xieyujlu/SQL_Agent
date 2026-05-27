@@ -6,13 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SQLAgent-ms 是一个基于 **deepagents** + **langchain** 的多智能体（Multi-Agent）数据查询系统。用户通过 Web 聊天界面用自然语言提问，系统自动调度子 Agent 完成数据库查询、数据可视化等任务。
 
+核心功能：
+- 自然语言查询 MySQL 数据库
+- Human-in-the-Loop（HITL）SQL 审核：SQL 执行后暂停，等待用户反馈后继续
+- 长期记忆：MySQL 存储用户偏好 + ChromaDB 向量存储事件记忆
+- 用户名身份识别：支持多用户切换，跨设备找回记忆
+
 ## 技术栈
 
 - **框架**: deepagents 0.5.9, langchain 1.2.18, langgraph 1.1.10, langchain-mcp-adapters
 - **LLM**: 阿里通义千问 (DashScope), model: qwen3.5-plus
-- **后端**: FastAPI + uvicorn
+- **后端**: FastAPI + uvicorn（SSE 流式输出）
 - **前端**: 原生 HTML/CSS/JS（无构建工具）
-- **数据库**: MySQL (通过 SQLAlchemy + PyMySQL)
+- **数据库**: MySQL (SQLAlchemy + PyMySQL)
+- **向量存储**: ChromaDB（嵌入式，本地持久化）
 - **外部服务**: MCP 协议连接（ModelScope 绘图）
 
 ## 启动方式
@@ -27,20 +34,23 @@ uvicorn src.backend.main:app --reload --port 8000
 ## 架构
 
 ```
-src/frontend/ (HTML/CSS/JS)   ← 用户浏览器
-     ↓ POST /api/chat
-src/backend/main.py            ← FastAPI 入口，启动时初始化 agent
+src/frontend/ (HTML/CSS/JS)   ← 用户浏览器（SSE 流式接收 + HITL 审核按钮）
+     ↓ POST /api/chat  /api/chat/feedback
+src/backend/main.py            ← FastAPI 入口，启动时初始化 agent，注入 user_id
      ↓
-src/backend/agent_runner.py    ← AgentRunner，管理 agent 生命周期
+src/backend/agent_runner.py    ← AgentRunner，管理 agent 生命周期 + HITL 中断/恢复
      ↓
-src/multi_agent/multi_agent.py ← create_my_agent() 构建 deep_agent
+src/multi_agent/multi_agent.py ← create_my_agent() 构建 deep_agent + 注册记忆工具
      ↓
-┌── SQL 子 Agent (核心) ──┬── MCP 子 Agents (可选) ──┐
-│  ListTablesTool          │  绘图 (ModelScope)       │
-│  TableSchemaTool         │                          │
-│  SQLQueryTool            │                          │
-│  SQLQueryCheckerTool     │                          │
-└──────────────────────────┴──────────────────────────┘
+┌── SQL 子 Agent (核心) ──┬── 主 Agent (记忆工具) ──┬── MCP 子 Agents ──┐
+│  ListTablesTool          │  GetUserProfileTool    │  绘图 (ModelScope) │
+│  TableSchemaTool         │  SetUserProfileTool    │                    │
+│  SQLQueryTool (HITL)     │  SaveEventTool         │                    │
+│  SQLQueryCheckerTool     │  SearchEventTool       │                    │
+└──────────────────────────┴────────────────────────┴───────────────────┘
+         ↓ interrupt()               ↓ MySQL              ↓ ChromaDB
+    LangGraph 暂停等待          user_profiles 表      event_memory 向量
+    用户审核 → resume
 ```
 
 ## 项目结构
@@ -49,25 +59,54 @@ src/multi_agent/multi_agent.py ← create_my_agent() 构建 deep_agent
 src/
   backend/
     main.py              # FastAPI 应用，路由 + 静态文件托管
-    agent_runner.py      # AgentRunner 封装（initialize / chat）
+    agent_runner.py      # AgentRunner 封装（chat / HITL 中断 / resume）
   multi_agent/
     multi_agent.py       # deep_agent 构建工厂 create_my_agent()
     mcp_tool_config.py   # MCP 外部服务连接配置
   agent/
-    tools/tool.py        # 4 个数据库工具（langchain BaseTool）
-    utils/db_utils.py    # MySQLDatabaseManager（SQLAlchemy 封装）
-    utils/log_utils.py   # loguru 日志配置
+    tools/
+      tool.py            # 4 个数据库工具（含 HITL interrupt）
+      memory_tools.py    # 4 个长期记忆工具（用户属性 + 事件记忆）
+    utils/
+      db_utils.py        # MySQLDatabaseManager（SQLAlchemy 封装）
+      feedback_db.py     # HITL 反馈 SQL 写入 MySQL
+      user_profile_db.py # 用户属性长期记忆（MySQL key-value 存储）
+      event_memory.py    # 事件记忆 ChromaDB 向量存储
+      log_utils.py       # loguru 日志配置
   frontend/
-    index.html           # 聊天界面
-    style.css            # 样式（气泡消息，Markdown 渲染）
-    app.js               # 前端逻辑（fetch API，Markdown 渲染）
-  teaching_skills/
-    get-system-info/     # 系统信息收集脚本
-    api-data-fetcher/    # API 数据查询（天气、汇率、新闻等）
-    file-manager/        # Windows 文件管理技能
+    index.html           # 聊天界面 + 用户名输入遮罩
+    style.css            # 样式（气泡消息，HITL 按钮，用户遮罩）
+    app.js               # 前端逻辑（SSE 流式，HITL UI，userId localStorage）
+  teaching_skills/       # Agent 技能脚本
+data/
+  chroma/                # ChromaDB 持久化文件（自动生成）
 ```
 
 ## 关键技术细节
+
+### HITL（Human-in-the-Loop）审核流程
+
+- SQLQueryTool._run() 执行 SQL 后调用 `langgraph.types.interrupt()` 暂停图执行
+- agent_runner._stream() 检测 `__interrupt__` 事件，yield `hitl_required` dict 后 `break` 退出流
+- 前端展示 SQL + 查询结果 + 3 个审核按钮（准确/错误/其他建议）
+- 用户提交反馈 → POST /api/chat/feedback → Command(resume=...) 恢复图执行
+- **关键**：interrupt 后必须 break 退出 _stream，否则 SSE 流会永久悬挂
+
+### 长期记忆系统
+
+- **MySQL 用户属性**：`user_profiles` 表（user_id + attribute + value），GetUserProfileTool / SetUserProfileTool
+- **ChromaDB 事件记忆**：本地持久化向量库（`data/chroma/`），SaveEventTool / SearchEventTool，内置 all-MiniLM-L6-v2 embedding
+- **短期记忆**：InMemorySaver（不变），会话级对话历史
+- **user_id 注入**：通过 `contextvars.ContextVar` 从 API 层传递到工具层
+
+### 用户身份
+
+- 前端 `localStorage` 存储 `sqlagent_username`（用户输入的称呼）
+- 首次访问弹出遮罩输入框，后续访问跳过
+- header 显示当前用户名，点击可切换用户（清空聊天记录 + 重置 sessionId）
+- 同一用户名跨设备/清缓存后输入即可找回记忆
+
+### 其他
 
 - **CompiledSubAgent 是 dict 子类** — 访问属性用 `s["name"]` / `s.get("name")`，不用 `s.name`
 - **MCP 服务器连接有 try-except 保护** — 外部服务不可用时自动跳过，不影响核心 SQL 功能
@@ -78,8 +117,9 @@ src/
 ## 环境要求
 
 - **环境变量**: `DASHSCOPE_API_KEY`（阿里通义千问 API Key）
-- **MySQL**: 本地 3306 端口，数据库 `stock`，用户 root / 密码 12345678（见 multi_agent.py:29）
+- **MySQL**: 本地 3306 端口，数据库 `stock`，用户 root / 密码 123456（见 .env）
 - **Python**: >= 3.11（使用了 `str | None` 类型注解语法）
+- **ChromaDB**: 首次启动自动下载 all-MiniLM-L6-v2 模型（约 80MB）
 
 ## 依赖安装
 
@@ -94,7 +134,7 @@ source venv/bin/activate       # macOS/Linux
 
 # 安装依赖
 pip install deepagents langchain langchain-openai langchain-mcp-adapters \
-            langgraph fastapi uvicorn loguru sqlalchemy pymysql
+            langgraph fastapi uvicorn loguru sqlalchemy pymysql chromadb
 ```
 
 **注意：** 运行项目或安装新依赖前，务必先 `source venv/bin/activate`，避免污染系统 Python 环境。
@@ -103,9 +143,14 @@ pip install deepagents langchain langchain-openai langchain-mcp-adapters \
 
 | 文件 | 作用 |
 |------|------|
-| [src/multi_agent/multi_agent.py](src/multi_agent/multi_agent.py) | deep_agent 构建入口，子 agent 注册 |
-| [src/backend/main.py](src/backend/main.py) | FastAPI 应用，POST /api/chat 接口 |
-| [src/backend/agent_runner.py](src/backend/agent_runner.py) | Agent 生命周期和消息路由 |
-| [src/agent/tools/tool.py](src/agent/tools/tool.py) | 4 个数据库查询工具 |
+| [src/multi_agent/multi_agent.py](src/multi_agent/multi_agent.py) | deep_agent 构建入口，子 agent + 记忆工具注册 |
+| [src/backend/main.py](src/backend/main.py) | FastAPI 应用，POST /api/chat + /api/chat/feedback |
+| [src/backend/agent_runner.py](src/backend/agent_runner.py) | Agent 生命周期 + HITL 中断检测（break 防悬挂） |
+| [src/agent/tools/tool.py](src/agent/tools/tool.py) | 4 个数据库工具（SQLQueryTool 含 interrupt） |
+| [src/agent/tools/memory_tools.py](src/agent/tools/memory_tools.py) | 4 个长期记忆工具 |
 | [src/agent/utils/db_utils.py](src/agent/utils/db_utils.py) | SQLAlchemy 数据库管理 |
+| [src/agent/utils/user_profile_db.py](src/agent/utils/user_profile_db.py) | MySQL 用户属性 CRUD |
+| [src/agent/utils/event_memory.py](src/agent/utils/event_memory.py) | ChromaDB 事件向量存储 |
+| [src/agent/utils/feedback_db.py](src/agent/utils/feedback_db.py) | HITL 反馈 MySQL 写入 |
+| [src/frontend/app.js](src/frontend/app.js) | 前端逻辑（SSE 解析、HITL UI、userId 管理） |
 | [src/multi_agent/mcp_tool_config.py](src/multi_agent/mcp_tool_config.py) | MCP 外部服务 URL 配置 |

@@ -63,6 +63,7 @@ function renderMarkdown(text) {
 /* ── Chat Application ────────────────────────── */
 const chatApp = {
     sessionId: null,
+    userId: null,
     hitlPending: false,
     currentAssistantDiv: null,
     accumulated: '',
@@ -70,7 +71,73 @@ const chatApp = {
     init: function() {
         this.cacheDOM();
         this.bindEvents();
+        this.initUserId();
         this.addWelcomeMessage();
+    },
+
+    initUserId: function() {
+        var self = this;
+        var stored = localStorage.getItem('sqlagent_username');
+        console.log('[INIT] localStorage sqlagent_username:', stored);
+
+        // 始终绑定弹窗事件（不管是否有已存储的用户名，切换时都需要）
+        document.getElementById('user-name-btn').addEventListener('click', function() {
+            self.setUsername();
+        });
+        document.getElementById('user-name-input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                self.setUsername();
+            }
+        });
+
+        if (stored) {
+            console.log('[INIT] 已有用户名，隐藏弹窗');
+            this.userId = stored;
+            document.getElementById('user-overlay').classList.add('hidden');
+            this.showCurrentUser();
+        } else {
+            console.log('[INIT] 无 localStorage，显示弹窗');
+            document.getElementById('user-overlay').classList.remove('hidden');
+            document.getElementById('user-name-input').focus();
+        }
+    },
+
+    setUsername: function() {
+        var input = document.getElementById('user-name-input');
+        var name = input.value.trim();
+        if (!name) return;
+        this.userId = name;
+        localStorage.setItem('sqlagent_username', name);
+        document.getElementById('user-overlay').classList.add('hidden');
+        this.showCurrentUser();
+        console.log('[USER] 用户名:', name);
+    },
+
+    showCurrentUser: function() {
+        var header = document.querySelector('header');
+        var el = document.getElementById('current-user');
+        if (!el) {
+            el = document.createElement('span');
+            el.id = 'current-user';
+            el.title = '点击更换称呼';
+            var self = this;
+            el.addEventListener('click', function() {
+                localStorage.removeItem('sqlagent_username');
+                self.userId = null;
+                self.sessionId = null;
+                self.messagesEl.innerHTML = '';
+                self.addWelcomeMessage();
+                document.getElementById('user-overlay').classList.remove('hidden');
+                document.getElementById('user-name-input').value = '';
+                document.getElementById('user-name-input').focus();
+                var tag = document.getElementById('current-user');
+                if (tag) tag.remove();
+            });
+            header.appendChild(el);
+        }
+        el.textContent = this.userId;
     },
 
     cacheDOM: function() {
@@ -172,6 +239,10 @@ const chatApp = {
         var self = this;
         var text = this.inputBox.value.trim();
         if (!text || this.hitlPending) return;
+        if (!this.userId) {
+            console.log('[SEND] userId 为空，忽略发送');
+            return;
+        }
 
         this.addMessage('user', text);
         this.inputBox.value = '';
@@ -188,6 +259,7 @@ const chatApp = {
                 body: JSON.stringify({
                     message: text,
                     session_id: this.sessionId,
+                    user_id: this.userId,
                 }),
             });
 
