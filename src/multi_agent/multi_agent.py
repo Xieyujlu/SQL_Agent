@@ -26,7 +26,13 @@ def get_tools(host: str, port: int, user: str, password: str, database: str) -> 
         SQLQueryCheckerTool(db_manger=manger)
     ]
 
-tools = get_tools(host="localhost", port='3306', user="root", password="123456", database="stock")
+tools = get_tools(
+    host=os.getenv("MYSQL_HOST", "localhost"),
+    port=os.getenv("MYSQL_PORT", "3306"),
+    user=os.getenv("MYSQL_USER", "root"),
+    password=os.getenv("MYSQL_PASSWORD", ""),
+    database=os.getenv("MYSQL_DATABASE", "stock"),
+)
 
 def get_python_executable():
     """获取当前Python解释器的完整路径"""
@@ -53,10 +59,9 @@ backend = LocalShellBackend(
 
 
 llm1=ChatOpenAI(
-        api_key='sk-4167fc4c801a4204a5ce9e6e23d3b8b2',
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model="qwen3.5-plus",  # 此处以qwen-plus为例，您可按需更换模型名称。模型列表：https://help.aliyun.com/zh/model-studio/getting-started/models
-        # other params...
+        api_key=os.getenv("DASHSCOPE_API_KEY"),
+        base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        model="qwen3.5-plus",
     )
 
 system_prompt = """
@@ -78,6 +83,13 @@ system_prompt = """
 4. 根据步骤1和2查到的实际表名和列名，生成准确的 SQL 查询
 5. 使用 SQLQueryCheckerTool 检查 SQL 正确性
 6. 使用 SQLQueryTool 执行查询
+
+**人工审核（HITL）说明：**
+- 每次执行 SQL 查询后，系统会自动暂停等待人工审核
+- 审核完成后，你会收到查询结果和用户的反馈意见
+- 如果反馈为"准确"，请直接基于查询结果给出分析报告
+- 如果反馈为"错误"并附带了说明，请根据说明修正 SQL 并重新查询
+- 如果反馈为"其他建议"，请根据建议调整查询或分析角度
 
 **重要约束：**
 - 只使用 SELECT 语句，禁止 INSERT/UPDATE/DELETE
@@ -137,7 +149,8 @@ async def create_my_agent():
     sql_assistant = create_agent(
         model=llm1,
         tools=tools,
-        system_prompt=system_prompt
+        system_prompt=system_prompt,
+        checkpointer=checkpointer,
     )
     sql_sub_agent = CompiledSubAgent(
         name='sql_assistant',

@@ -220,6 +220,152 @@ header h1 {
     cursor: not-allowed;
 }
 
+/* ── HITL Feedback ──────────────────────────── */
+.hitl-feedback {
+    align-self: flex-start;
+    background: #fff;
+    border: 2px solid #667eea;
+    border-radius: 12px;
+    padding: 16px;
+    margin: 4px 0;
+    max-width: 100%;
+    animation: fadeIn 0.3s ease;
+}
+
+.hitl-sql {
+    margin-bottom: 10px;
+}
+
+.hitl-sql strong {
+    font-size: 13px;
+    color: #555;
+}
+
+.hitl-sql pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 10px 12px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 13px;
+    margin-top: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.hitl-sql code {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.hitl-result {
+    margin-bottom: 10px;
+}
+
+.hitl-result strong {
+    font-size: 13px;
+    color: #555;
+}
+
+.hitl-result pre {
+    background: #f8f9fa;
+    color: #333;
+    padding: 10px 12px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 13px;
+    margin-top: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #e0e0e0;
+}
+
+.hitl-result code {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.hitl-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 12px;
+}
+
+.hitl-buttons {
+    display: flex;
+    gap: 10px;
+}
+
+.hitl-btn {
+    padding: 8px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.hitl-btn:active {
+    transform: scale(0.97);
+}
+
+.hitl-approve {
+    background: #22c55e;
+    color: #fff;
+}
+
+.hitl-approve:hover {
+    background: #16a34a;
+}
+
+.hitl-reject {
+    background: #ef4444;
+    color: #fff;
+}
+
+.hitl-reject:hover {
+    background: #dc2626;
+}
+
+.hitl-suggest {
+    background: #f59e0b;
+    color: #fff;
+}
+
+.hitl-suggest:hover {
+    background: #d97706;
+}
+
+.hitl-extra {
+    margin-top: 12px;
+}
+
+.hitl-extra.hidden {
+    display: none;
+}
+
+.hitl-extra-input {
+    width: 100%;
+    resize: none;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.hitl-extra-input:focus {
+    border-color: #667eea;
+}
+
 /* ── Scrollbar ───────────────────────────────── */
 #chat-container::-webkit-scrollbar {
     width: 6px;

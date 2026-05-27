@@ -2,12 +2,14 @@ import uuid
 from collections.abc import AsyncGenerator
 
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
+from loguru import logger
 
 from src.multi_agent.multi_agent import create_my_agent
 
 
 class AgentRunner:
-    """封装 deep_agent 的生命周期管理，提供简洁的 chat 接口。"""
+    """封装 deep_agent 的生命周期管理，提供 chat + HITL 中断/恢复接口。"""
 
     def __init__(self):
         self._agent = None
@@ -39,29 +41,77 @@ class AgentRunner:
 
     async def astream_chat(
         self, message: str, session_id: str | None = None
-    ) -> AsyncGenerator[str, None]:
-        """流式发送用户消息，逐 token yield 文本内容。"""
+    ) -> AsyncGenerator[str | dict, None]:
+        """流式发送用户消息。
+
+        yield: str (AI token) 或 dict (控制事件 hitl_required)
+        """
         if self._agent is None:
             raise RuntimeError("Agent 尚未初始化，请先调用 initialize()")
 
         thread_id = session_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
 
+        async for item in self._stream(config, {"messages": [HumanMessage(content=message)]}, enable_hitl=True):
+            yield item
+
+    async def resume_chat(
+        self, session_id: str, decision: str, message: str = ""
+    ) -> AsyncGenerator[str | dict, None]:
+        """恢复被 HITL 中断的对话。"""
+        if self._agent is None:
+            raise RuntimeError("Agent 尚未初始化")
+
+        config = {"configurable": {"thread_id": session_id}}
+        cmd = Command(resume={"decision": decision, "message": message})
+
+        async for item in self._stream(config, cmd, enable_hitl=False):
+            yield item
+
+    # ── 内部方法 ──────────────────────────────────────────────────
+
+    async def _stream(
+        self, config: dict, input_data, enable_hitl: bool = True
+    ) -> AsyncGenerator[str | dict, None]:
+        """统一流式处理。
+
+        StreamChunk = (namespace: tuple[str,...], mode: str, data: Any)
+        """
+        hitl_sent = False
+
         async for chunk in self._agent.astream(
-            {"messages": [HumanMessage(content=message)]},
-            stream_mode="messages",
+            input_data,
+            stream_mode=["messages", "updates"],
             subgraphs=True,
             config=config,
         ):
-            # v1 格式：chunk 是 (namespace, (token, metadata)) 元组
-            if isinstance(chunk, tuple) and len(chunk) == 2:
-                _namespace, (token, _metadata) = chunk
-            # v2 格式：chunk 是 {"type": "messages", "data": (token, metadata), ...}
-            elif isinstance(chunk, dict) and chunk.get("type") == "messages":
-                token, _metadata = chunk["data"]
-            else:
+            # StreamChunk 是 3 元组: (namespace, mode, data)
+            if not (hasattr(chunk, "__len__") and len(chunk) >= 3):
                 continue
 
-            # 只 yield AI 生成的纯文本 token，跳过工具调用消息
-            if token.content and hasattr(token, "tool_call_chunks") and not token.tool_call_chunks:
-                yield token.content
+            mode = chunk[1]
+            data = chunk[2]
+
+            if mode == "messages":
+                if hasattr(data, "__len__") and len(data) >= 2:
+                    token, _metadata = data[0], data[1]
+                    if token.content and hasattr(token, "tool_call_chunks"):
+                        yield token.content
+
+            elif mode == "updates" and not hitl_sent:
+                if enable_hitl and isinstance(data, dict) and "__interrupt__" in data:
+                    hitl_sent = True
+                    interrupt_data = data["__interrupt__"]
+                    query = ""
+                    result = ""
+                    if interrupt_data:
+                        iv = interrupt_data[0].value
+                        query = iv.get("query", "")
+                        result = iv.get("result", "")
+                    logger.info(f"[HITL] 发送审核事件, query={query[:80]}...")
+                    yield {
+                        "type": "hitl_required",
+                        "session_id": config["configurable"]["thread_id"],
+                        "query": query,
+                        "result": result,
+                    }

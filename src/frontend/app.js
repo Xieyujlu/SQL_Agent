@@ -63,6 +63,9 @@ function renderMarkdown(text) {
 /* ── Chat Application ────────────────────────── */
 const chatApp = {
     sessionId: null,
+    hitlPending: false,
+    currentAssistantDiv: null,
+    accumulated: '',
 
     init: function() {
         this.cacheDOM();
@@ -110,19 +113,50 @@ const chatApp = {
         container.scrollTop = container.scrollHeight;
     },
 
+    /* ── SSE 流式读取 ───────────────────────── */
+
+    readSSEStream: async function(response, onToken, onDone, onHitl) {
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+            buffer += decoder.decode(result.value, { stream: true });
+
+            var lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (!line.startsWith('data: ')) continue;
+                var data = JSON.parse(line.slice(6));
+
+                if (data.type === 'hitl_required') {
+                    onHitl(data.session_id, data.query, data.result);
+                } else if (data.token) {
+                    onToken(data.token);
+                } else if (data.done) {
+                    onDone(data.session_id);
+                }
+            }
+        }
+    },
+
+    /* ── 发送消息 ────────────────────────────── */
+
     send: async function() {
         var self = this;
         var text = this.inputBox.value.trim();
-        if (!text) return;
+        if (!text || this.hitlPending) return;
 
-        // 添加用户消息
         this.addMessage('user', text);
         this.inputBox.value = '';
         this.setLoading(true);
 
-        // 预先创建空的 assistant 消息容器
-        var assistantDiv = this.addMessage('assistant', '');
-        var accumulated = '';
+        this.accumulated = '';
+        this.currentAssistantDiv = this.addMessage('assistant', '');
 
         try {
             var res = await fetch('/api/chat', {
@@ -139,48 +173,135 @@ const chatApp = {
                 throw new Error('请求失败 (' + res.status + '): ' + errText);
             }
 
-            var reader = res.body.getReader();
-            var decoder = new TextDecoder();
-            var buffer = '';
-
-            while (true) {
-                var result = await reader.read();
-                if (result.done) break;
-                buffer += decoder.decode(result.value, { stream: true });
-
-                var lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (var i = 0; i < lines.length; i++) {
-                    var line = lines[i];
-                    if (line.startsWith('data: ')) {
-                        var data = JSON.parse(line.slice(6));
-                        if (data.token) {
-                            accumulated += data.token;
-                            assistantDiv.innerHTML = renderMarkdown(accumulated);
-                            self.scrollToBottom();
-                        }
-                        if (data.done) {
-                            self.sessionId = data.session_id;
-                        }
-                    }
+            await this.readSSEStream(
+                res,
+                function(token) {
+                    self.accumulated += token;
+                    self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated);
+                    self.scrollToBottom();
+                },
+                function(sid) {
+                    self.sessionId = sid;
+                },
+                function(sid, query, result) {
+                    self.sessionId = sid;
+                    self.createFeedbackUI(sid, query, result);
                 }
-            }
-
-            // 处理 buffer 中剩余的数据
-            if (buffer.startsWith('data: ')) {
-                var data = JSON.parse(buffer.slice(6));
-                if (data.token) {
-                    accumulated += data.token;
-                    assistantDiv.innerHTML = renderMarkdown(accumulated);
-                }
-                if (data.done) {
-                    self.sessionId = data.session_id;
-                }
-            }
+            );
 
         } catch (err) {
-            assistantDiv.innerHTML = '<p>错误：' + err.message + '</p>';
+            this.currentAssistantDiv.innerHTML = '<p>错误：' + err.message + '</p>';
+        } finally {
+            if (!this.hitlPending) {
+                this.setLoading(false);
+            }
+            this.inputBox.focus();
+        }
+    },
+
+    /* ── HITL 反馈 UI ────────────────────────── */
+
+    createFeedbackUI: function(sessionId, query, result) {
+        var self = this;
+        this.hitlPending = true;
+        this.setLoading(false);
+
+        var queryBlock = query
+            ? '<div class="hitl-sql"><strong>执行SQL：</strong><pre><code>' +
+              query.replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+              '</code></pre></div>'
+            : '';
+        var resultBlock = result
+            ? '<div class="hitl-result"><strong>查询结果：</strong><pre><code>' +
+              result.replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+              '</code></pre></div>'
+            : '';
+
+        var fbDiv = document.createElement('div');
+        fbDiv.className = 'hitl-feedback';
+        fbDiv.id = 'hitl-' + sessionId;
+        fbDiv.innerHTML =
+            queryBlock +
+            resultBlock +
+            '<div class="hitl-label">请审核查询结果：</div>' +
+            '<div class="hitl-buttons">' +
+            '  <button class="hitl-btn hitl-approve" data-decision="准确">准确</button>' +
+            '  <button class="hitl-btn hitl-reject" data-decision="错误">错误</button>' +
+            '  <button class="hitl-btn hitl-suggest" data-decision="其他建议">其他建议</button>' +
+            '</div>' +
+            '<div class="hitl-extra hidden">' +
+            '  <textarea class="hitl-extra-input" placeholder="请描述具体问题或建议..."></textarea>' +
+            '</div>';
+
+        this.messagesEl.appendChild(fbDiv);
+        this.scrollToBottom();
+
+        // 绑定按钮事件
+        var buttons = fbDiv.querySelectorAll('.hitl-btn');
+        var extraDiv = fbDiv.querySelector('.hitl-extra');
+        var extraInput = fbDiv.querySelector('.hitl-extra-input');
+
+        buttons.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var decision = btn.getAttribute('data-decision');
+                if (decision === '错误' || decision === '其他建议') {
+                    // 展开文本框
+                    if (extraDiv.classList.contains('hidden')) {
+                        extraDiv.classList.remove('hidden');
+                        extraInput.focus();
+                        return; // 等待用户输入后再提交
+                    }
+                    // 已展开，获取输入内容提交
+                    var msg = extraInput.value.trim();
+                    self.submitFeedback(sessionId, decision, msg, fbDiv);
+                } else {
+                    self.submitFeedback(sessionId, decision, '', fbDiv);
+                }
+            });
+        });
+    },
+
+    submitFeedback: async function(sessionId, decision, message, fbDiv) {
+        var self = this;
+
+        // 移除反馈 UI
+        fbDiv.remove();
+        this.hitlPending = false;
+        this.setLoading(true);
+
+        // 创建新的 assistant 消息容器接收后续输出
+        this.accumulated = '';
+        this.currentAssistantDiv = this.addMessage('assistant', '');
+
+        try {
+            var res = await fetch('/api/chat/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    decision: decision,
+                    message: message,
+                }),
+            });
+
+            if (!res.ok) {
+                var errText = await res.text();
+                throw new Error('反馈提交失败 (' + res.status + '): ' + errText);
+            }
+
+            await this.readSSEStream(
+                res,
+                function(token) {
+                    self.accumulated += token;
+                    self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated);
+                    self.scrollToBottom();
+                },
+                function() {},
+                function() {}
+            );
+
+        } catch (err) {
+            this.currentAssistantDiv.innerHTML = '<p>错误：' + err.message + '</p>';
         } finally {
             this.setLoading(false);
             this.inputBox.focus();

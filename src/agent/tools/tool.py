@@ -1,6 +1,9 @@
 
 from pyexpat import model
 from typing import List, Optional
+
+from langgraph.errors import GraphInterrupt
+from langgraph.types import interrupt
 from venv import create
 from langchain_core.tools import BaseTool
 from pydantic import Field, create_model
@@ -78,29 +81,56 @@ class TableSchemaTool(BaseTool):
         return self._run(table_names)
 
 class SQLQueryTool(BaseTool):
-    """检查SQL查询语法"""
+    """执行SQL查询"""
     name: str = "sql_db_query"
     description: str = "在MySQL数据库中执行SQL查询语句并返回结果。输入应为有效的SQL SELECT查询语句。"
 
     db_manger: MySQLDatabaseManger
 
-    def __init__(self,**kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # self.db_manger = db_manger
-        self.args_schema = create_model("SQLQueryToolArgs", query=(str,Field(description="有效的SQL SELECT查询语句")))
+        self.args_schema = create_model(
+            "SQLQueryToolArgs",
+            query=(str, Field(description="有效的SQL SELECT查询语句")),
+        )
 
+    def _request_hitl(self, query: str, result: str) -> str:
+        """请求人工审核（SQL SELECT 幂等，恢复后重新执行是安全的）。"""
+        feedback = interrupt({
+            "query": query,
+            "result": result,
+            "options": ["准确", "错误", "其他建议"],
+        })
+        decision = feedback.get("decision", "准确")
+        message = feedback.get("message", "")
 
+        if decision == "错误":
+            return (
+                f"SQL查询结果:\n{result}\n\n"
+                f"用户反馈（错误）: {message}\n"
+                f"请根据反馈修正SQL并重新查询。"
+            )
+        elif decision == "其他建议":
+            return (
+                f"SQL查询结果:\n{result}\n\n"
+                f"用户建议: {message}\n"
+                f"请根据建议调整查询或分析。"
+            )
+        else:
+            return f"SQL查询结果（已通过人工审核）:\n{result}"
 
     def _run(self, query: str) -> str:
         """执行SQL查询语句"""
         try:
             result = self.db_manger.execute_query(query)
-            return result
+            return self._request_hitl(query, result)
+        except GraphInterrupt:
+            raise
         except Exception as e:
             return f"执行SQL查询语句时出错: {str(e)}"
-        
+
     async def _arun(self, query: str) -> str:
-        """异步执行"""
+        """异步执行SQL查询"""
         return self._run(query)
 
 
@@ -136,7 +166,7 @@ if __name__ == "__main__":
         "host": "localhost",
         "port": 3306,
         "user": "root",
-        "password": "12345678",
+        "password": os.getenv("MYSQL_PASSWORD", ""),
         "database": "stock"
     }
     

@@ -109,7 +109,7 @@ class MySQLDatabaseManger:
                 if indexes:
                     table_schma += "索引：\n"
                     for idx in indexes:
-                        table_schma += f"  索引名：{idx['name']}, 列名：{', '.join(idx['columns'])}\n"
+                        table_schma += f"  索引名：{idx['name']}, 列名：{', '.join(idx['column_names'])}\n"
 
                 schema_info.append(table_schma)
             return "\n".join(schema_info) if schema_info else "未找到匹配的表"
