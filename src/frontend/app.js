@@ -182,7 +182,7 @@ const chatApp = {
 
     /* ── SSE 流式读取 ───────────────────────── */
 
-    readSSEStream: async function(response, onToken, onDone, onHitl) {
+    readSSEStream: async function(response, onToken, onDone, onHitl, onTraceInfo) {
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
         var buffer = '';
@@ -197,6 +197,8 @@ const chatApp = {
                         var lastData = JSON.parse(trimmed.slice(6));
                         if (lastData.type === 'hitl_required') {
                             onHitl(lastData.session_id, lastData.query, lastData.result);
+                        } else if (lastData.type === 'trace_info') {
+                            onTraceInfo(lastData.trace_id, lastData.trace_url);
                         } else if (lastData.token) {
                             onToken(lastData.token);
                         } else if (lastData.done) {
@@ -221,6 +223,8 @@ const chatApp = {
 
                     if (data.type === 'hitl_required') {
                         onHitl(data.session_id, data.query, data.result);
+                    } else if (data.type === 'trace_info') {
+                        onTraceInfo(data.trace_id, data.trace_url);
                     } else if (data.token) {
                         onToken(data.token);
                     } else if (data.done) {
@@ -285,6 +289,11 @@ const chatApp = {
                     self.hitlProcessed = true;
                     self.currentAssistantDiv.innerHTML = '<p style="color:#667eea;font-weight:bold">查询已执行，等待审核...</p>';
                     self.createFeedbackUI(sid, query, result);
+                },
+                function(traceId, traceUrl) {
+                    var linkHtml = '<p class="trace-link"><a href="' + traceUrl + '" target="_blank" rel="noopener">查看 Trace →</a></p>';
+                    self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated) + linkHtml;
+                    self.scrollToBottom();
                 }
             );
 
@@ -404,6 +413,11 @@ const chatApp = {
                     self.hitlProcessed = true;
                     self.currentAssistantDiv.innerHTML = '<p style="color:#667eea;font-weight:bold">查询已执行，等待审核...</p>';
                     self.createFeedbackUI(sid, query, result);
+                },
+                function(traceId, traceUrl) {
+                    var linkHtml = '<p class="trace-link"><a href="' + traceUrl + '" target="_blank" rel="noopener">查看 Trace →</a></p>';
+                    self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated) + linkHtml;
+                    self.scrollToBottom();
                 }
             );
 

@@ -21,6 +21,7 @@ SQLAgent-ms 是一个基于 **deepagents** + **langchain** 的多智能体（Mul
 - **数据库**: MySQL (SQLAlchemy + PyMySQL)
 - **向量存储**: ChromaDB（嵌入式，本地持久化）
 - **外部服务**: MCP 协议连接（ModelScope 绘图）
+- **Tracing**: Langfuse v4.6（LLM 调用跟踪 + Token 统计）
 
 ## 启动方式
 
@@ -72,6 +73,7 @@ src/
       feedback_db.py     # HITL 反馈 SQL 写入 MySQL
       user_profile_db.py # 用户属性长期记忆（MySQL key-value 存储）
       event_memory.py    # 事件记忆 ChromaDB 向量存储
+      tracing.py         # Langfuse 集成（trace 跟踪 + token 统计）
       log_utils.py       # loguru 日志配置
   frontend/
     index.html           # 聊天界面 + 用户名输入遮罩
@@ -98,6 +100,19 @@ data/
 - **ChromaDB 事件记忆**：本地持久化向量库（`data/chroma/`），SaveEventTool / SearchEventTool，内置 all-MiniLM-L6-v2 embedding
 - **短期记忆**：InMemorySaver（不变），会话级对话历史
 - **user_id 注入**：通过 `contextvars.ContextVar` 从 API 层传递到工具层
+
+### 已知待改进
+
+- **记忆注入从"拉"改"推"**：当前依赖 LLM 在 prompt 指引下主动调用 `get_user_profile` / `search_event`（拉模式），存在被跳过或遗忘的风险。更可靠的做法是在 `agent_runner.py` 的 `_stream()` 中，每次请求前自动查询 MySQL/ChromaDB，将用户偏好和历史事件拼入 system prompt（推模式），确保记忆一定被使用。改动点：`agent_runner.py` 的 `_stream()` + `main.py` 的 event_stream。
+
+### Langfuse Tracing
+
+- **CallbackHandler**: 每次请求创建独立实例，注入 `config["callbacks"]`，LangGraph 自动传播到所有子 Agent 和 LLM 调用
+- **Trace 隔离**: 每个请求独立的 CallbackHandler，不同 session 的 trace 相互独立
+- **元数据**: trace_context 包含 user_id + session_id，可在 Langfuse UI 中按用户/会话筛选
+- **Token 统计**: CallbackHandler 自动拦截 `on_llm_end` 事件，记录 prompt_tokens / completion_tokens / total_tokens
+- **前端展示**: SSE 流结束后 yield `trace_info` 事件，前端渲染 Langfuse Trace 链接
+- **配置文件**: `src/agent/utils/tracing.py`，环境变量 `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL`
 
 ### 用户身份
 
@@ -134,7 +149,7 @@ source venv/bin/activate       # macOS/Linux
 
 # 安装依赖
 pip install deepagents langchain langchain-openai langchain-mcp-adapters \
-            langgraph fastapi uvicorn loguru sqlalchemy pymysql chromadb
+            langgraph fastapi uvicorn loguru sqlalchemy pymysql chromadb langfuse
 ```
 
 **注意：** 运行项目或安装新依赖前，务必先 `source venv/bin/activate`，避免污染系统 Python 环境。
@@ -151,6 +166,7 @@ pip install deepagents langchain langchain-openai langchain-mcp-adapters \
 | [src/agent/utils/db_utils.py](src/agent/utils/db_utils.py) | SQLAlchemy 数据库管理 |
 | [src/agent/utils/user_profile_db.py](src/agent/utils/user_profile_db.py) | MySQL 用户属性 CRUD |
 | [src/agent/utils/event_memory.py](src/agent/utils/event_memory.py) | ChromaDB 事件向量存储 |
+| [src/agent/utils/tracing.py](src/agent/utils/tracing.py) | Langfuse Trace 集成（CallbackHandler + Token 统计） |
 | [src/agent/utils/feedback_db.py](src/agent/utils/feedback_db.py) | HITL 反馈 MySQL 写入 |
 | [src/frontend/app.js](src/frontend/app.js) | 前端逻辑（SSE 解析、HITL UI、userId 管理） |
 | [src/multi_agent/mcp_tool_config.py](src/multi_agent/mcp_tool_config.py) | MCP 外部服务 URL 配置 |

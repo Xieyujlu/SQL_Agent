@@ -61,7 +61,7 @@ async def chat(req: ChatRequest):
     async def event_stream():
         sid = req.session_id or str(uuid.uuid4())
         current_user_id.set(req.user_id)
-        async for item in agent_runner.astream_chat(req.message, sid):
+        async for item in agent_runner.astream_chat(req.message, sid, req.user_id):
             if isinstance(item, dict):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             elif item:
@@ -89,7 +89,7 @@ async def submit_feedback(req: FeedbackRequest):
     async def event_stream():
         current_user_id.set("default")
         async for item in agent_runner.resume_chat(
-            req.session_id, req.decision, req.message
+            req.session_id, req.decision, req.message, "default"
         ):
             if isinstance(item, dict):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"

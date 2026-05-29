@@ -95,6 +95,22 @@ header h1 {
     margin-bottom: 8px;
 }
 
+.message.assistant p.trace-link {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid #e0e0e0;
+    font-size: 12px;
+}
+
+.message.assistant p.trace-link a {
+    color: #667eea;
+    text-decoration: none;
+}
+
+.message.assistant p.trace-link a:hover {
+    text-decoration: underline;
+}
+
 .message.assistant p:last-child {
     margin-bottom: 0;
 }

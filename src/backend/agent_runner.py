@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from loguru import logger
 
+from src.agent.utils.tracing import get_langfuse_callback, get_trace_url
 from src.multi_agent.multi_agent import create_my_agent
 
 
@@ -40,11 +41,11 @@ class AgentRunner:
         return str(result)
 
     async def astream_chat(
-        self, message: str, session_id: str | None = None
+        self, message: str, session_id: str | None = None, user_id: str = ""
     ) -> AsyncGenerator[str | dict, None]:
         """流式发送用户消息。
 
-        yield: str (AI token) 或 dict (控制事件 hitl_required)
+        yield: str (AI token) 或 dict (控制事件 hitl_required / trace_info)
         """
         if self._agent is None:
             raise RuntimeError("Agent 尚未初始化，请先调用 initialize()")
@@ -52,11 +53,11 @@ class AgentRunner:
         thread_id = session_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
 
-        async for item in self._stream(config, {"messages": [HumanMessage(content=message)]}, enable_hitl=True):
+        async for item in self._stream(config, {"messages": [HumanMessage(content=message)]}, enable_hitl=True, user_id=user_id, session_id=thread_id):
             yield item
 
     async def resume_chat(
-        self, session_id: str, decision: str, message: str = ""
+        self, session_id: str, decision: str, message: str = "", user_id: str = ""
     ) -> AsyncGenerator[str | dict, None]:
         """恢复被 HITL 中断的对话。"""
         if self._agent is None:
@@ -65,13 +66,14 @@ class AgentRunner:
         config = {"configurable": {"thread_id": session_id}}
         cmd = Command(resume={"decision": decision, "message": message})
 
-        async for item in self._stream(config, cmd, enable_hitl=True):
+        async for item in self._stream(config, cmd, enable_hitl=True, user_id=user_id, session_id=session_id):
             yield item
 
     # ── 内部方法 ──────────────────────────────────────────────────
 
     async def _stream(
-        self, config: dict, input_data, enable_hitl: bool = True
+        self, config: dict, input_data, enable_hitl: bool = True,
+        user_id: str = "", session_id: str = "",
     ) -> AsyncGenerator[str | dict, None]:
         """统一流式处理。
 
@@ -79,6 +81,19 @@ class AgentRunner:
         """
         hitl_sent = False
         seen_tools: set[str] = set()
+        langfuse_handler = None
+
+        # 注入 Langfuse tracing
+        if user_id or session_id:
+            langfuse_handler = get_langfuse_callback(
+                user_id=user_id, session_id=session_id
+            )
+            if "callbacks" not in config:
+                config["callbacks"] = []
+            config["callbacks"].append(langfuse_handler)
+            logger.info(f"[Tracing] Langfuse 已启用, user={user_id}, session={session_id}")
+
+        trace_id = None
 
         async for chunk in self._agent.astream(
             input_data,
@@ -125,3 +140,14 @@ class AgentRunner:
                         "result": result,
                     }
                     break  # 中断后退出流，不再等待更多 chunk（astream 已暂停）
+
+        # 流结束后输出 trace 信息
+        if langfuse_handler and langfuse_handler.last_trace_id:
+            trace_id = langfuse_handler.last_trace_id
+            trace_url = get_trace_url(trace_id)
+            logger.info(f"[Tracing] trace_id={trace_id}")
+            yield {
+                "type": "trace_info",
+                "trace_id": trace_id,
+                "trace_url": trace_url,
+            }
