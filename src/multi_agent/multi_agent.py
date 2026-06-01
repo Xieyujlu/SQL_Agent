@@ -9,11 +9,19 @@ load_dotenv(Path(__file__).resolve().parent.parent / "agent" / ".env")
 
 from deepagents import CompiledSubAgent, create_deep_agent
 from langchain.agents import create_agent
-from typing import List
+from typing import List, Iterator
 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import BaseTool
-from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import BaseMessage
+from langchain_core.outputs import ChatResult, ChatGenerationChunk
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from loguru import logger
+from pydantic import PrivateAttr
+import aiosqlite
+
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from src.multi_agent.mcp_tool_config import plot_mcp_server_config
 from src.agent.tools.tool import ListTablesTool, TableSchemaTool, SQLQueryTool, SQLQueryCheckerTool
@@ -62,7 +70,19 @@ SKILLS_ROOT = Path("./teaching_skills")
 workspace_dir = Path("llm/").absolute()
 
 
-checkpointer = InMemorySaver()
+_db_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "checkpoints.db")
+
+_checkpointer: AsyncSqliteSaver | None = None
+
+
+async def _get_checkpointer() -> AsyncSqliteSaver:
+    """获取全局单例 AsyncSqliteSaver（异步初始化）。"""
+    global _checkpointer
+    if _checkpointer is None:
+        _conn = await aiosqlite.connect(_db_path)
+        _checkpointer = AsyncSqliteSaver(_conn)
+        await _checkpointer.setup()
+    return _checkpointer
 
 # 本地沙箱
 backend = LocalShellBackend(
@@ -76,11 +96,135 @@ backend = LocalShellBackend(
     })
 
 
-llm1=ChatOpenAI(
-        api_key=os.getenv("DASHSCOPE_API_KEY"),
-        base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        model="qwen3.5-plus",
-    )
+class _FallbackChatModel(BaseChatModel):
+    """ChatModel 包装器：主模型失败时 try-except 切换到备用模型。
+
+    所有模型自省（bind_tools、profile、model_name 等）委托给主模型，
+    仅对 _generate / _stream 等实际调用方法做 try-except 降级。
+    """
+
+    _primary: BaseChatModel = PrivateAttr()
+    _fallback: BaseChatModel = PrivateAttr()
+
+    def __init__(self, primary: BaseChatModel, fallback: BaseChatModel):
+        super().__init__()
+        self._primary = primary
+        self._fallback = fallback
+
+    # ── 自省属性委托给主模型 ──────────────────────────────────
+    def __getattr__(self, name: str):
+        # 先让 Pydantic 处理 PrivateAttr（_primary / _fallback）和自身字段
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self._primary, name)
+
+    @property
+    def _llm_type(self) -> str:
+        return self._primary._llm_type
+
+    # ── bind_tools / bind：必须显式覆盖，否则 BaseChatModel 的
+    #     NotImplemented 实现会通过 MRO 匹配，跳过 __getattr__ ───
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        result = self._primary.bind_tools(tools, tool_choice=tool_choice, **kwargs)
+        result.bound = self  # 换绑到 self，确保调用链路经过 try-except
+        return result
+
+    def bind(self, **kwargs):
+        result = self._primary.bind(**kwargs)
+        result.bound = self
+        return result
+
+    # ── 实际调用方法：try primary → except fallback ──────────
+
+    def _generate(
+        self, messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs,
+    ) -> ChatResult:
+        try:
+            return self._primary._generate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+        except Exception:
+            logger.warning(f"主模型 qwen3.5-plus 调用失败，切换到备用模型 qwen-turbo")
+            return self._fallback._generate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+
+    async def _agenerate(
+        self, messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs,
+    ) -> ChatResult:
+        try:
+            return await self._primary._agenerate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+        except Exception:
+            logger.warning(f"主模型 qwen3.5-plus 调用失败，切换到备用模型 qwen-turbo")
+            return await self._fallback._agenerate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+
+    def _stream(
+        self, messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs,
+    ) -> Iterator[ChatGenerationChunk]:
+        try:
+            yield from self._primary._stream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+        except Exception:
+            logger.warning(f"主模型 qwen3.5-plus 调用失败，切换到备用模型 qwen-turbo")
+            yield from self._fallback._stream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+
+    async def _astream(
+        self, messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs,
+    ):
+        try:
+            async for chunk in self._primary._astream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                yield chunk
+        except Exception:
+            logger.warning(f"主模型 qwen3.5-plus 调用失败，切换到备用模型 qwen-turbo")
+            async for chunk in self._fallback._astream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                yield chunk
+
+
+_common_kwargs = dict(
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+)
+
+llm_primary = ChatOpenAI(
+    **_common_kwargs,
+    model="qwen3.5-plus",
+    max_retries=3,
+    timeout=60,
+)
+
+llm_fallback = ChatOpenAI(
+    **_common_kwargs,
+    model="qwen-turbo",
+    max_retries=2,
+    timeout=30,
+)
+
+llm1 = _FallbackChatModel(primary=llm_primary, fallback=llm_fallback)
 
 system_prompt = """
 你是一个专业的数据分析师，专门帮助用户查询和分析数据库。
@@ -168,7 +312,7 @@ async def create_my_agent():
         model=llm1,
         tools=tools,
         system_prompt=system_prompt,
-        checkpointer=checkpointer,
+        checkpointer=await _get_checkpointer(),
     )
     sql_sub_agent = CompiledSubAgent(
         name='sql_assistant',
@@ -222,6 +366,6 @@ async def create_my_agent():
         system_prompt=agent_prompt,
         backend=backend,
         skills=[str(SKILLS_ROOT)],
-        checkpointer=checkpointer
+        checkpointer=await _get_checkpointer()
     )
 

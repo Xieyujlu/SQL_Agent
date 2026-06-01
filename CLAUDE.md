@@ -15,10 +15,10 @@ SQLAgent-ms 是一个基于 **deepagents** + **langchain** 的多智能体（Mul
 ## 技术栈
 
 - **框架**: deepagents 0.5.9, langchain 1.2.18, langgraph 1.1.10, langchain-mcp-adapters
-- **LLM**: 阿里通义千问 (DashScope), model: qwen3.5-plus
+- **LLM**: 阿里通义千问 (DashScope)，主模型 qwen3.5-plus，备用模型 qwen-turbo（try-except 自动降级）
 - **后端**: FastAPI + uvicorn（SSE 流式输出）
 - **前端**: 原生 HTML/CSS/JS（无构建工具）
-- **数据库**: MySQL (SQLAlchemy + PyMySQL)
+- **数据库**: MySQL (SQLAlchemy + PyMySQL) + SQLite (aiosqlite, LangGraph 检查点持久化)
 - **向量存储**: ChromaDB（嵌入式，本地持久化）
 - **外部服务**: MCP 协议连接（ModelScope 绘图）
 - **Tracing**: Langfuse v4.6（LLM 调用跟踪 + Token 统计）
@@ -42,7 +42,7 @@ src/backend/main.py            ← FastAPI 入口，启动时初始化 agent，�
 src/backend/agent_runner.py    ← AgentRunner，管理 agent 生命周期 + HITL 中断/恢复
      ↓
 src/multi_agent/multi_agent.py ← create_my_agent() 构建 deep_agent + 注册记忆工具
-     ↓
+     ↓                                          ↓ AsyncSqliteSaver
 ┌── SQL 子 Agent (核心) ──┬── 主 Agent (记忆工具) ──┬── MCP 子 Agents ──┐
 │  ListTablesTool          │  GetUserProfileTool    │  绘图 (ModelScope) │
 │  TableSchemaTool         │  SetUserProfileTool    │                    │
@@ -51,7 +51,7 @@ src/multi_agent/multi_agent.py ← create_my_agent() 构建 deep_agent + 注册�
 └──────────────────────────┴────────────────────────┴───────────────────┘
          ↓ interrupt()               ↓ MySQL              ↓ ChromaDB
     LangGraph 暂停等待          user_profiles 表      event_memory 向量
-    用户审核 → resume
+    checkpoint 持久化到 SQLite → 用户审核 → resume 恢复
 ```
 
 ## 项目结构
@@ -66,7 +66,8 @@ src/
     mcp_tool_config.py   # MCP 外部服务连接配置
   agent/
     tools/
-      tool.py            # 4 个数据库工具（含 HITL interrupt）
+      tool.py            # 4 个数据库工具（含 HITL interrupt + 熔断保护）
+      safe_tool.py       # 工具熔断 Mixin（连续失败自动短路）
       memory_tools.py    # 4 个长期记忆工具（用户属性 + 事件记忆）
     utils/
       db_utils.py        # MySQLDatabaseManager（SQLAlchemy 封装）
@@ -93,17 +94,29 @@ data/
 - 前端展示 SQL + 查询结果 + 3 个审核按钮（准确/错误/其他建议）
 - 用户提交反馈 → POST /api/chat/feedback → Command(resume=...) 恢复图执行
 - **关键**：interrupt 后必须 break 退出 _stream，否则 SSE 流会永久悬挂
+- **持久化**：检查点写入 SQLite（`data/checkpoints.db`），服务重启后同一 session_id 仍可恢复
 
 ### 长期记忆系统
 
 - **MySQL 用户属性**：`user_profiles` 表（user_id + attribute + value），GetUserProfileTool / SetUserProfileTool
 - **ChromaDB 事件记忆**：本地持久化向量库（`data/chroma/`），SaveEventTool / SearchEventTool，内置 all-MiniLM-L6-v2 embedding
-- **短期记忆**：InMemorySaver（不变），会话级对话历史
+- **短期记忆/会话持久化**：AsyncSqliteSaver（`data/checkpoints.db`），服务重启后 HITL 会话不丢失，可继续恢复
 - **user_id 注入**：通过 `contextvars.ContextVar` 从 API 层传递到工具层
 
 ### 已知待改进
 
 - **记忆注入从"拉"改"推"**：当前依赖 LLM 在 prompt 指引下主动调用 `get_user_profile` / `search_event`（拉模式），存在被跳过或遗忘的风险。更可靠的做法是在 `agent_runner.py` 的 `_stream()` 中，每次请求前自动查询 MySQL/ChromaDB，将用户偏好和历史事件拼入 system prompt（推模式），确保记忆一定被使用。改动点：`agent_runner.py` 的 `_stream()` + `main.py` 的 event_stream。
+
+### 稳定性保障
+
+- **LLM 重试**：`max_retries=3` + `timeout=60`，API 超时/限流自动 exponential backoff 重试。注意 `with_fallbacks()` 与 `create_deep_agent` 框架不兼容，不可使用
+- **Agent 轮次上限**：`recursion_limit=25`，防止 Agent 陷入死循环无限烧 token。正常 SQL 查询 4-6 轮结束，25 轮足够兜底
+- **工具熔断器**（`safe_tool.py` CircuitBreakerMixin）：每个数据库工具独立计数。连续失败 3 次后 30 秒内 **抛 RuntimeError**（LangGraph 感知为 tool error，强制终止而非靠 LLM 自觉停止）。冷却期后自动探活一次。已集成到全部 4 个工具
+- **全局异常兜底**：`_stream()` 最外层 try-except 包裹，未预料的异常不卡死前端，yield `error` 事件并提示重试
+- **前端错误处理**：SSE 解析新增 `error` 事件，红色显示错误信息
+- **HITL 会话持久化**：AsyncSqliteSaver 将检查点写入 `data/checkpoints.db`，服务重启/崩溃后 HITL 审核中的会话可继续恢复，不再丢失
+- **Feedback user_id**：`/api/chat/feedback` 端点不再硬编码 `"default"`，通过 `ContextVar` 注入前端传来的真实 `user_id`
+- **模型备选**：`_FallbackChatModel`（`multi_agent.py`）包装主模型 qwen3.5-plus + 备用模型 qwen-turbo。通过 `BaseChatModel` 子类 + `__getattr__` 委托模式，所有自省属性（profile、model_name、_get_ls_params 等）委托给主模型，仅 `_generate` / `_agenerate` / `_stream` / `_astream` 做 try-except 降级。`bind_tools` / `bind` 显式覆盖以保证 RunnableBinding 换绑到 wrapper 自身
 
 ### Langfuse Tracing
 
@@ -125,7 +138,7 @@ data/
 
 - **CompiledSubAgent 是 dict 子类** — 访问属性用 `s["name"]` / `s.get("name")`，不用 `s.name`
 - **MCP 服务器连接有 try-except 保护** — 外部服务不可用时自动跳过，不影响核心 SQL 功能
-- **InMemorySaver** — 对话检查点保存在内存中，session_id 映射 thread_id 实现多轮对话
+- **AsyncSqliteSaver** — 对话检查点持久化到 SQLite（`data/checkpoints.db`），服务重启后 HITL 会话可恢复
 - **LocalShellBackend** — 文件系统沙箱，限制 agent 可执行命令的范围
 - **SQL 工具只读约束** — execute_query 和 check_query 均只允许 SELECT/WITH 语句
 
@@ -149,7 +162,8 @@ source venv/bin/activate       # macOS/Linux
 
 # 安装依赖
 pip install deepagents langchain langchain-openai langchain-mcp-adapters \
-            langgraph fastapi uvicorn loguru sqlalchemy pymysql chromadb langfuse
+            langgraph langgraph-checkpoint-sqlite fastapi uvicorn loguru \
+            sqlalchemy pymysql aiosqlite chromadb langfuse
 ```
 
 **注意：** 运行项目或安装新依赖前，务必先 `source venv/bin/activate`，避免污染系统 Python 环境。
@@ -160,8 +174,9 @@ pip install deepagents langchain langchain-openai langchain-mcp-adapters \
 |------|------|
 | [src/multi_agent/multi_agent.py](src/multi_agent/multi_agent.py) | deep_agent 构建入口，子 agent + 记忆工具注册 |
 | [src/backend/main.py](src/backend/main.py) | FastAPI 应用，POST /api/chat + /api/chat/feedback |
-| [src/backend/agent_runner.py](src/backend/agent_runner.py) | Agent 生命周期 + HITL 中断检测（break 防悬挂） |
-| [src/agent/tools/tool.py](src/agent/tools/tool.py) | 4 个数据库工具（SQLQueryTool 含 interrupt） |
+| [src/backend/agent_runner.py](src/backend/agent_runner.py) | Agent 生命周期 + HITL 中断 + 异常兜底 + recursion_limit |
+| [src/agent/tools/tool.py](src/agent/tools/tool.py) | 4 个数据库工具（含 interrupt + 熔断保护） |
+| [src/agent/tools/safe_tool.py](src/agent/tools/safe_tool.py) | 工具熔断 Mixin（CircuitBreakerMixin） |
 | [src/agent/tools/memory_tools.py](src/agent/tools/memory_tools.py) | 4 个长期记忆工具 |
 | [src/agent/utils/db_utils.py](src/agent/utils/db_utils.py) | SQLAlchemy 数据库管理 |
 | [src/agent/utils/user_profile_db.py](src/agent/utils/user_profile_db.py) | MySQL 用户属性 CRUD |
