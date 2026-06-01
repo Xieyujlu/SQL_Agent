@@ -37,6 +37,7 @@ class FeedbackRequest(BaseModel):
     session_id: str
     decision: str  # "准确" / "错误" / "其他建议"
     message: str = ""
+    user_id: str = "default"
 
 
 # ── 生命周期 ─────────────────────────────────────────────────────
@@ -87,9 +88,9 @@ async def submit_feedback(req: FeedbackRequest):
         logger.warning("保存反馈失败: %s", e)
 
     async def event_stream():
-        current_user_id.set("default")
+        current_user_id.set(req.user_id)
         async for item in agent_runner.resume_chat(
-            req.session_id, req.decision, req.message, "default"
+            req.session_id, req.decision, req.message, req.user_id
         ):
             if isinstance(item, dict):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"

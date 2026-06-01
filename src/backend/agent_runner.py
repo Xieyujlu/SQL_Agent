@@ -83,71 +83,82 @@ class AgentRunner:
         seen_tools: set[str] = set()
         langfuse_handler = None
 
-        # 注入 Langfuse tracing
-        if user_id or session_id:
-            langfuse_handler = get_langfuse_callback(
-                user_id=user_id, session_id=session_id
-            )
-            if "callbacks" not in config:
-                config["callbacks"] = []
-            config["callbacks"].append(langfuse_handler)
-            logger.info(f"[Tracing] Langfuse 已启用, user={user_id}, session={session_id}")
+        try:
+            # 注入 Langfuse tracing
+            if user_id or session_id:
+                langfuse_handler = get_langfuse_callback(
+                    user_id=user_id, session_id=session_id
+                )
+                if "callbacks" not in config:
+                    config["callbacks"] = []
+                config["callbacks"].append(langfuse_handler)
+                logger.info(f"[Tracing] Langfuse 已启用, user={user_id}, session={session_id}")
 
-        trace_id = None
+            config["recursion_limit"] = 25  # 防止 Agent 死循环无限烧 token
 
-        async for chunk in self._agent.astream(
-            input_data,
-            stream_mode=["messages", "updates"],
-            subgraphs=True,
-            config=config,
-        ):
-            # StreamChunk 是 3 元组: (namespace, mode, data)
-            if not (hasattr(chunk, "__len__") and len(chunk) >= 3):
-                continue
+            trace_id = None
 
-            mode = chunk[1]
-            data = chunk[2]
+            async for chunk in self._agent.astream(
+                input_data,
+                stream_mode=["messages", "updates"],
+                subgraphs=True,
+                config=config,
+            ):
+                # StreamChunk 是 3 元组: (namespace, mode, data)
+                if not (hasattr(chunk, "__len__") and len(chunk) >= 3):
+                    continue
 
-            if mode == "messages":
-                if hasattr(data, "__len__") and len(data) >= 2:
-                    token, _metadata = data[0], data[1]
-                    # 检测工具调用开始，输出状态提示
-                    if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
-                        for tc in token.tool_call_chunks:
-                            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                            if name and name not in seen_tools:
-                                seen_tools.add(name)
-                                yield f"\n> 🔍 正在执行: {name}\n"
-                    # 流式文本内容
-                    if token.content and hasattr(token, "tool_call_chunks"):
-                        yield token.content
+                mode = chunk[1]
+                data = chunk[2]
 
-            elif mode == "updates" and not hitl_sent:
-                if enable_hitl and isinstance(data, dict) and "__interrupt__" in data:
-                    hitl_sent = True
-                    interrupt_data = data["__interrupt__"]
-                    query = ""
-                    result = ""
-                    if interrupt_data:
-                        iv = interrupt_data[0].value
-                        query = iv.get("query", "")
-                        result = iv.get("result", "")
-                    logger.info(f"[HITL] 发送审核事件, query={query[:80]}...")
-                    yield {
-                        "type": "hitl_required",
-                        "session_id": config["configurable"]["thread_id"],
-                        "query": query,
-                        "result": result,
-                    }
-                    break  # 中断后退出流，不再等待更多 chunk（astream 已暂停）
+                if mode == "messages":
+                    if hasattr(data, "__len__") and len(data) >= 2:
+                        token, _metadata = data[0], data[1]
+                        # 检测工具调用开始，输出状态提示
+                        if hasattr(token, "tool_call_chunks") and token.tool_call_chunks:
+                            for tc in token.tool_call_chunks:
+                                name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                                if name and name not in seen_tools:
+                                    seen_tools.add(name)
+                                    yield f"\n> 🔍 正在执行: {name}\n"
+                        # 流式文本内容
+                        if token.content and hasattr(token, "tool_call_chunks"):
+                            yield token.content
 
-        # 流结束后输出 trace 信息
-        if langfuse_handler and langfuse_handler.last_trace_id:
-            trace_id = langfuse_handler.last_trace_id
-            trace_url = get_trace_url(trace_id)
-            logger.info(f"[Tracing] trace_id={trace_id}")
+                elif mode == "updates" and not hitl_sent:
+                    if enable_hitl and isinstance(data, dict) and "__interrupt__" in data:
+                        hitl_sent = True
+                        interrupt_data = data["__interrupt__"]
+                        query = ""
+                        result = ""
+                        if interrupt_data:
+                            iv = interrupt_data[0].value
+                            query = iv.get("query", "")
+                            result = iv.get("result", "")
+                        logger.info(f"[HITL] 发送审核事件, query={query[:80]}...")
+                        yield {
+                            "type": "hitl_required",
+                            "session_id": config["configurable"]["thread_id"],
+                            "query": query,
+                            "result": result,
+                        }
+                        break  # 中断后退出流，不再等待更多 chunk（astream 已暂停）
+
+            # 流结束后输出 trace 信息
+            if langfuse_handler and langfuse_handler.last_trace_id:
+                trace_id = langfuse_handler.last_trace_id
+                trace_url = get_trace_url(trace_id)
+                logger.info(f"[Tracing] trace_id={trace_id}")
+                yield {
+                    "type": "trace_info",
+                    "trace_id": trace_id,
+                    "trace_url": trace_url,
+                }
+
+        except Exception:
+            logger.exception("[Agent] 流执行异常")
             yield {
-                "type": "trace_info",
-                "trace_id": trace_id,
-                "trace_url": trace_url,
+                "type": "error",
+                "message": "系统处理出错，请重新发送消息重试。",
+                "recoverable": True,
             }

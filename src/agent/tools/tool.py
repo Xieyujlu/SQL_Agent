@@ -1,18 +1,17 @@
 
-from pyexpat import model
 from typing import List, Optional
 
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
-from venv import create
 from langchain_core.tools import BaseTool
 from pydantic import Field, create_model
-from sqlalchemy import table
+
+from src.agent.tools.safe_tool import CircuitBreakerMixin
 from src.agent.utils.db_utils import MySQLDatabaseManger
-from src.agent.utils.log_utils import log
+from loguru import logger
 
 
-class ListTablesTool(BaseTool):
+class ListTablesTool(CircuitBreakerMixin, BaseTool):
 
     """列出所有表信息"""
     name: str = "sql_db_list_tables"
@@ -21,7 +20,11 @@ class ListTablesTool(BaseTool):
     # 数据库管理器实例
     db_manger: MySQLDatabaseManger
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def _run(self) -> str:
+        self._check_circuit()
         try:
             tables_info = self.db_manger.get_table_with_comments()
             result = f"数据库中共有{len(tables_info)}张表:\n\n"
@@ -37,10 +40,12 @@ class ListTablesTool(BaseTool):
 
                 result += f"{i}. {table_name}\n"
                 result += f"    描述: {description_display}\n\n"
+            self._record_success()
             return result
 
         except Exception as e:
-            log.exception(e)
+            logger.exception(e)
+            self._record_failure()
             return f"列出表时出错: {str(e)}"
         
 
@@ -50,7 +55,7 @@ class ListTablesTool(BaseTool):
         return self._run()
     
 
-class TableSchemaTool(BaseTool):
+class TableSchemaTool(CircuitBreakerMixin, BaseTool):
 
     """列出表结构"""
     name: str = "sql_db_schema"
@@ -60,27 +65,29 @@ class TableSchemaTool(BaseTool):
 
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        # self.db_manger = db_manger
         self.args_schema = create_model("TableSchemaToolArgs", table_names=(Optional[str],Field(description="表名列表，以逗号分隔,例如：users,order")))
 
     def _run(self, table_names: Optional[str] = None) -> str:
         """返回表结构"""
+        self._check_circuit()
         try:
             table_list = None
             if table_names:
                 table_list = [name.strip() for name in table_names.split(",") if name.strip()]
                 schema_info = self.db_manger.get_table_schema(table_list)
+            self._record_success()
             return schema_info if schema_info else "未找到匹配的表"
 
         except Exception as e:
-            log.exception(e)
+            logger.exception(e)
+            self._record_failure()
             return f"获取表结构时出错: {str(e)}"
     
     async def _arun(self, table_names: Optional[str] = None) -> str:
         """异步执行"""
         return self._run(table_names)
 
-class SQLQueryTool(BaseTool):
+class SQLQueryTool(CircuitBreakerMixin, BaseTool):
     """执行SQL查询"""
     name: str = "sql_db_query"
     description: str = "在MySQL数据库中执行SQL查询语句并返回结果。输入应为有效的SQL SELECT查询语句。"
@@ -121,12 +128,15 @@ class SQLQueryTool(BaseTool):
 
     def _run(self, query: str) -> str:
         """执行SQL查询语句"""
+        self._check_circuit()
         try:
             result = self.db_manger.execute_query(query)
+            self._record_success()
             return self._request_hitl(query, result)
         except GraphInterrupt:
             raise
         except Exception as e:
+            self._record_failure()
             return f"执行SQL查询语句时出错: {str(e)}"
 
     async def _arun(self, query: str) -> str:
@@ -134,7 +144,7 @@ class SQLQueryTool(BaseTool):
         return self._run(query)
 
 
-class SQLQueryCheckerTool(BaseTool):
+class SQLQueryCheckerTool(CircuitBreakerMixin, BaseTool):
     """检查SQL查询语法"""
     name: str = "sql_db_query_checker"
     description: str = "检查SQL查询语句的语法是否正确，提供验证反馈。输入应为要检查的SQL查询。"
@@ -143,15 +153,17 @@ class SQLQueryCheckerTool(BaseTool):
 
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        # self.db_manger = db_manger
         self.args_schema = create_model("SQLQueryCheckerToolArgs", query=(str,Field(description="需要进行检查的SQL语句")))
 
     def _run(self, query: str) -> str:
         """检查SQL查询语句"""
+        self._check_circuit()
         try:
             result = self.db_manger.check_query(query)
+            self._record_success()
             return result
         except Exception as e:
+            self._record_failure()
             return f"检查SQL查询语句时出错: {str(e)}"
         
     async def _arun(self, query: str) -> str:

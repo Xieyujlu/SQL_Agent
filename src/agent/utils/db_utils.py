@@ -7,7 +7,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.sql.expression import text
 from sqlalchemy.inspection import inspect
 from sqlalchemy import column, create_engine
-from src.agent.utils.log_utils import log
+from loguru import logger
 
 class MySQLDatabaseManger:
     """MySQL数据库管理器，负责数据库连接和基本操作"""
@@ -28,7 +28,7 @@ class MySQLDatabaseManger:
             inspector = inspect(self.engine)
             return inspector.get_table_names()
         except Exception as e:
-            log.exception("获取表名时发生错误")
+            logger.exception("获取表名时发生错误")
             raise ValueError(f"获取表名失败: {str(e)}")
         
 
@@ -58,7 +58,7 @@ class MySQLDatabaseManger:
                 tables_info = [{'table_name': row[0], 'table_comment': row[1]} for row in result]
                 return tables_info
         except Exception as e:
-            log.exception("获取表信息时发生错误")
+            logger.exception("获取表信息时发生错误")
             raise ValueError(f"获取表名及描述信息失败: {str(e)}")
 
     def get_table_schema(self, table_names: Optional[List[str]] = None) -> str:
@@ -115,7 +115,7 @@ class MySQLDatabaseManger:
             return "\n".join(schema_info) if schema_info else "未找到匹配的表"
 
         except Exception as e:
-            log.exception("获取表模式信息时发生错误")
+            logger.exception("获取表模式信息时发生错误")
             raise ValueError(f"获取表模式信息失败: {str(e)}")
             
 
@@ -167,7 +167,7 @@ class MySQLDatabaseManger:
                 return json.dumps(result_data, ensure_ascii=False, indent=2)
         
         except Exception as e:
-            log.exception("执行查询时发生错误")
+            logger.exception("执行查询时发生错误")
             return f"执行查询失败: {str(e)}"
 
     def check_query(self, query: str) -> str:
@@ -212,7 +212,7 @@ class MySQLDatabaseManger:
 
         except Exception as e:
 
-            log.exception("验证查询时发生错误")
+            logger.exception("验证查询时发生错误")
 
             return f"SQL语法错误: {str(e)}"
 

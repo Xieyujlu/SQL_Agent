@@ -75,7 +75,6 @@ src/
       user_profile_db.py # 用户属性长期记忆（MySQL key-value 存储）
       event_memory.py    # 事件记忆 ChromaDB 向量存储
       tracing.py         # Langfuse 集成（trace 跟踪 + token 统计）
-      log_utils.py       # loguru 日志配置
   frontend/
     index.html           # 聊天界面 + 用户名输入遮罩
     style.css            # 样式（气泡消息，HITL 按钮，用户遮罩）

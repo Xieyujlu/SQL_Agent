@@ -182,7 +182,7 @@ const chatApp = {
 
     /* ── SSE 流式读取 ───────────────────────── */
 
-    readSSEStream: async function(response, onToken, onDone, onHitl, onTraceInfo) {
+    readSSEStream: async function(response, onToken, onDone, onHitl, onTraceInfo, onError) {
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
         var buffer = '';
@@ -199,6 +199,8 @@ const chatApp = {
                             onHitl(lastData.session_id, lastData.query, lastData.result);
                         } else if (lastData.type === 'trace_info') {
                             onTraceInfo(lastData.trace_id, lastData.trace_url);
+                        } else if (lastData.type === 'error') {
+                            onError(lastData.message, lastData.recoverable);
                         } else if (lastData.token) {
                             onToken(lastData.token);
                         } else if (lastData.done) {
@@ -225,6 +227,8 @@ const chatApp = {
                         onHitl(data.session_id, data.query, data.result);
                     } else if (data.type === 'trace_info') {
                         onTraceInfo(data.trace_id, data.trace_url);
+                    } else if (data.type === 'error') {
+                        onError(data.message, data.recoverable);
                     } else if (data.token) {
                         onToken(data.token);
                     } else if (data.done) {
@@ -290,9 +294,13 @@ const chatApp = {
                     self.currentAssistantDiv.innerHTML = '<p style="color:#667eea;font-weight:bold">查询已执行，等待审核...</p>';
                     self.createFeedbackUI(sid, query, result);
                 },
-                function(traceId, traceUrl) {
+                function(_traceId, traceUrl) {
                     var linkHtml = '<p class="trace-link"><a href="' + traceUrl + '" target="_blank" rel="noopener">查看 Trace →</a></p>';
                     self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated) + linkHtml;
+                    self.scrollToBottom();
+                },
+                function(errorMsg) {
+                    self.currentAssistantDiv.innerHTML = '<p style="color:#ef4444">错误：' + errorMsg + '</p>';
                     self.scrollToBottom();
                 }
             );
@@ -390,6 +398,7 @@ const chatApp = {
                     session_id: sessionId,
                     decision: decision,
                     message: message,
+                    user_id: self.userId,
                 }),
             });
 
@@ -414,9 +423,13 @@ const chatApp = {
                     self.currentAssistantDiv.innerHTML = '<p style="color:#667eea;font-weight:bold">查询已执行，等待审核...</p>';
                     self.createFeedbackUI(sid, query, result);
                 },
-                function(traceId, traceUrl) {
+                function(_traceId, traceUrl) {
                     var linkHtml = '<p class="trace-link"><a href="' + traceUrl + '" target="_blank" rel="noopener">查看 Trace →</a></p>';
                     self.currentAssistantDiv.innerHTML = renderMarkdown(self.accumulated) + linkHtml;
+                    self.scrollToBottom();
+                },
+                function(errorMsg) {
+                    self.currentAssistantDiv.innerHTML = '<p style="color:#ef4444">错误：' + errorMsg + '</p>';
                     self.scrollToBottom();
                 }
             );
