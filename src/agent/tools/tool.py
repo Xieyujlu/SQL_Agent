@@ -71,10 +71,11 @@ class TableSchemaTool(CircuitBreakerMixin, BaseTool):
         """返回表结构"""
         self._check_circuit()
         try:
-            table_list = None
             if table_names:
                 table_list = [name.strip() for name in table_names.split(",") if name.strip()]
                 schema_info = self.db_manger.get_table_schema(table_list)
+            else:
+                schema_info = self.db_manger.get_table_schema()
             self._record_success()
             return schema_info if schema_info else "未找到匹配的表"
 

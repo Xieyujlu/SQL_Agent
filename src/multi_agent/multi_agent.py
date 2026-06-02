@@ -66,7 +66,8 @@ def get_python_executable():
     print(f"当前Python解释器: {python_exe}")
     return python_exe
 
-SKILLS_ROOT = Path("./teaching_skills")
+# 用文件相对路径，兼容本地开发 (cwd=项目根) 和 Docker (cwd=/app)
+SKILLS_ROOT = Path(__file__).resolve().parent.parent / "teaching_skills"
 workspace_dir = Path("llm/").absolute()
 
 
@@ -237,7 +238,7 @@ system_prompt = """
 
 **执行步骤：**
 1. **重要**: 使用 ListTablesTool 查看数据库中实际的表名（绝对不要猜测表名或使用 "table" 作为表名）
-2. 使用 TableSchemaTool 查看表的结构和列名
+2. 根据表名推断与用户问题相关的表，使用 TableSchemaTool 只查询相关表的结构和列名（必须传入 table_names 参数，禁止不传参查全部表）
 3. 仔细理解用户问题，提取关键信息：
    - 如果用户要求"前N条"、"显示N条"、"N个"，SQL 必须使用 LIMIT N
    - 如果用户没有指定数量，默认使用 LIMIT 10
@@ -256,6 +257,7 @@ system_prompt = """
 **重要约束：**
 - 只使用 SELECT 语句，禁止 INSERT/UPDATE/DELETE
 - **必须先调用 ListTablesTool 查看实际表名，绝对不要使用 "table" 或猜测的表名**
+- **TableSchemaTool 只能查询与用户问题相关的表（必须传 table_names 参数），绝对不要一次查全部表结构**
 - **使用查询到的真实表名编写SQL（例如：file_xxx）**
 - 必须根据用户指定的数量生成 LIMIT 子句
 - 如果出错，分析错误并重新生成 SQL

@@ -75,13 +75,17 @@ class MySQLDatabaseManger:
             tables_to_process = table_names if table_names else inspector.get_table_names()
 
             for table_name in tables_to_process:
-                # 获取表结构信息
-                column_info = inspector.get_columns(table_name)
-                # 使用get_pk_constraint 替代已弃用的 get_primary_keys 方法
-                pk_constraint = inspector.get_pk_constraint(table_name)
-                primary_keys = pk_constraint['constrained_columns'] if pk_constraint else []
-                foregin_keys = inspector.get_foreign_keys(table_name)
-                indexes = inspector.get_indexes(table_name)
+                try:
+                    # 获取表结构信息
+                    column_info = inspector.get_columns(table_name)
+                    # 使用get_pk_constraint 替代已弃用的 get_primary_keys 方法
+                    pk_constraint = inspector.get_pk_constraint(table_name)
+                    primary_keys = pk_constraint['constrained_columns'] if pk_constraint else []
+                    foregin_keys = inspector.get_foreign_keys(table_name)
+                    indexes = inspector.get_indexes(table_name)
+                except Exception:
+                    logger.warning(f"获取表 {table_name} 的结构信息失败，已跳过")
+                    continue
 
                 # 构建表模式描述
                 table_schma = f"表名： {table_name}\n"
@@ -90,21 +94,14 @@ class MySQLDatabaseManger:
                 for column in column_info:
                     # 检查该列是否在主键列表中
                     pk_indicator = " (主键)" if column['name'] in primary_keys else ""
-                    # 获取字段注释，如果不存在则显示“无注释”
+                    # 获取字段注释，如果不存在则显示"无注释"
                     comment = column.get('comment', '无注释')
                     table_schma += f"  列名：{column['name']}{pk_indicator}, 类型：{column['type']}, 注释：{comment}\n"
-                 
-
-                    # 处理外键信息
 
                 if foregin_keys:
                     table_schma += "外键约束：\n"
                     for fk in foregin_keys:
                         table_schma += f"  列名：{fk['name']}, 引用表：{fk['referred_table']}, 引用列：{fk['referred_columns']}\n"
-
-                    
-
-                    # 处理索引信息
 
                 if indexes:
                     table_schma += "索引：\n"
